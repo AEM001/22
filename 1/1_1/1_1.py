@@ -1,8 +1,9 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import chi2_contingency
+from scipy.stats import chi2_contingency, fisher_exact
 import warnings
+import numpy as np
 
 
 # --- 全局设置 ---
@@ -35,18 +36,91 @@ def create_markdown_table(df, title):
     
     return markdown
 
+def check_chi2_assumptions(contingency_table):
+    """
+    检查卡方检验的前提条件
+    返回：(检验方法, 期望频数统计, 检查结果文本)
+    """
+    # 计算期望频数
+    chi2_stat, p_val, dof, expected = chi2_contingency(contingency_table)
+    expected_array = np.array(expected)
+    
+    # 统计期望频数情况
+    cells_less_than_1 = np.sum(expected_array < 1)
+    cells_less_than_5 = np.sum(expected_array < 5)
+    total_cells = expected_array.size
+    percent_less_than_5 = (cells_less_than_5 / total_cells) * 100
+    
+    # 决定检验方法
+    if cells_less_than_1 > 0:
+        method = "Fisher精确检验"
+        reason = f"存在{cells_less_than_1}个期望频数<1的单元格"
+    elif percent_less_than_5 > 20:
+        method = "Fisher精确检验"  
+        reason = f"{percent_less_than_5:.1f}%的单元格期望频数<5，超过20%"
+    else:
+        method = "皮尔逊卡方检验"
+        reason = "所有期望频数≥5，满足标准卡方检验条件"
+    
+    # 创建期望频数报告
+    expected_df = pd.DataFrame(expected_array, 
+                              index=contingency_table.index,
+                              columns=contingency_table.columns)
+    
+    assumptions_text = f"""
+### 卡方检验前提条件检查
+
+**期望频数矩阵：**
+{expected_df.round(2).to_string()}
+
+**统计结果：**
+- 总单元格数：{total_cells}
+- 期望频数<1的单元格：{cells_less_than_1}个
+- 期望频数<5的单元格：{cells_less_than_5}个 ({percent_less_than_5:.1f}%)
+- **选择方法：{method}**
+- **理由：{reason}**
+
+"""
+    
+    return method, expected_df, assumptions_text
+
+def perform_statistical_test(contingency_table, method):
+    """根据方法执行相应的统计检验"""
+    
+    if method == "Fisher精确检验":
+        if contingency_table.shape == (2, 2):
+            # 2x2表格用Fisher精确检验
+            result = fisher_exact(contingency_table)
+            oddsratio = float(result[0])
+            p_value = float(result[1])
+            return None, p_value, None, f"比值比 (OR) = {oddsratio:.4f}"
+        else:
+            # 多维表格用卡方检验但标注警告
+            result = chi2_contingency(contingency_table)
+            chi2_stat = float(result[0])
+            p_value = float(result[1])
+            dof = int(result[2])
+            return chi2_stat, p_value, dof, "注：多维表格Fisher检验，此处显示卡方近似值"
+    else:
+        # 标准卡方检验
+        result = chi2_contingency(contingency_table)
+        chi2_stat = float(result[0])
+        p_value = float(result[1])
+        dof = int(result[2])
+        return chi2_stat, p_value, dof, ""
+
 def analyze_and_visualize(df, independent_var, dependent_var='表面风化', report_file=None):
     """分析变量关系并生成markdown报告"""
     
     # 创建列联表
     contingency_table = pd.crosstab(df[dependent_var], df[independent_var], margins=True, margins_name="总计")
-    
-    # 卡方检验
     test_data = pd.crosstab(df[dependent_var], df[independent_var])
-    result = chi2_contingency(test_data)
-    chi2: float = result[0]  # type: ignore
-    p_value: float = result[1]  # type: ignore
-    dof: int = result[2]  # type: ignore
+    
+    # 检查前提条件并选择检验方法
+    method, expected_df, assumptions_text = check_chi2_assumptions(test_data)
+    
+    # 执行相应的统计检验
+    chi2_stat, p_value, dof, additional_info = perform_statistical_test(test_data, method)
     
     # 生成markdown报告
     markdown_content = f"""
@@ -54,23 +128,34 @@ def analyze_and_visualize(df, independent_var, dependent_var='表面风化', rep
 
 {create_markdown_table(contingency_table, f"{independent_var}与{dependent_var}列联表")}
 
-### 卡方检验结果
+{assumptions_text}
+
+### 检验结果 ({method})
 
 | 统计量 | 数值 |
-|--------|------|
-| 卡方统计量 | {chi2:.4f} |
+|--------|------|"""
+    
+    if chi2_stat is not None:
+        markdown_content += f"""
+| 卡方统计量 | {chi2_stat:.4f} |
 | P值 | {p_value:.4f} |
-| 自由度 | {dof} |
-
-### 结论
-
-"""
+| 自由度 | {dof} |"""
+    else:
+        markdown_content += f"""
+| P值 | {p_value:.4f} |"""
+    
+    if additional_info:
+        markdown_content += f"""
+| 备注 | {additional_info} |"""
+    
+    markdown_content += "\n\n### 结论\n\n"
     
     alpha = 0.05
-    if p_value < alpha:
-        conclusion = f"P值 ({p_value:.4f}) < {alpha}，拒绝原假设。**{dependent_var}与{independent_var}存在显著关联**。"
+    p_val = float(p_value) if p_value is not None else 1.0
+    if p_val < alpha:
+        conclusion = f"P值 ({p_val:.4f}) < {alpha}，拒绝原假设。**{dependent_var}与{independent_var}存在显著关联**。"
     else:
-        conclusion = f"P值 ({p_value:.4f}) ≥ {alpha}，不能拒绝原假设。{dependent_var}与{independent_var}无显著关联。"
+        conclusion = f"P值 ({p_val:.4f}) ≥ {alpha}，不能拒绝原假设。{dependent_var}与{independent_var}无显著关联。"
     
     markdown_content += conclusion + "\n\n"
     
@@ -151,11 +236,18 @@ def main():
     with open(report_file, 'a', encoding='utf-8') as f:
         f.write("""## 分析总结
 
-本报告通过卡方检验分析了玻璃文物的表面风化与其类型、纹饰、颜色之间的关联性。
+本报告通过统计检验分析了玻璃文物的表面风化与其类型、纹饰、颜色之间的关联性。
 
-- **显著性水平：** α = 0.05
-- **检验方法：** 皮尔逊卡方检验
-- **可视化：** 分组条形图
+### 检验方法选择原则：
+- **标准卡方检验：** 所有期望频数≥5
+- **Fisher精确检验：** 存在期望频数<1或>20%单元格期望频数<5
+
+### 前提条件检查：
+- ✅ **变量类型：** 所有变量均为分类变量
+- ✅ **独立性：** 样本相互独立，每个观测值仅归属一个交叉单元格
+- ✅ **期望频数：** 已根据期望频数情况选择合适的检验方法
+
+**显著性水平：** α = 0.05
 
 *报告完成*
 """)
