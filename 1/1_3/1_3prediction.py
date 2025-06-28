@@ -2,9 +2,11 @@ import pandas as pd
 import warnings
 import numpy as np
 import os
+from sklearn.neighbors import NearestNeighbors
 
 # --- Global Settings ---
 warnings.filterwarnings('ignore')
+K_NEIGHBORS = 5  # 为KNN算法设置邻居数量
 
 # --- Transformation Functions ---
 
@@ -89,11 +91,11 @@ def load_deltas_from_csv(analysis_files):
     print("\n--- 从CSV加载规律完成 ---\n")
     return deltas
 
-def predict_pre_weathering_composition(df_to_predict, deltas):
+def predict_pre_weathering_composition_delta(df_to_predict, deltas):
     """
-    根据风化样本的实测数据和计算出的CLR空间差值Delta，预测其风化前的成分含量。
+    (原始方法) 根据风化样本的实测数据和计算出的CLR空间差值Delta，预测其风化前的成分含量。
     """
-    print("--- 步骤 2: 对风化样本进行风化前成分预测 (CLR方法) ---")
+    print("--- 步骤 2: 对风化样本进行风化前成分预测 (Delta方法) ---")
     
     weathered_samples = df_to_predict[df_to_predict['表面风化'] == '风化'].copy()
     if weathered_samples.empty:
@@ -130,6 +132,100 @@ def predict_pre_weathering_composition(df_to_predict, deltas):
     print("  - 已在CLR空间中完成预测。")
     
     # 3. 对预测结果应用逆CLR变换，还原为百分比
+    predictions_df = inverse_clr_transformation(predicted_clr, chemical_cols)
+    print("  - 已对预测结果应用逆CLR变换。")
+    
+    # 重新计算百分比总和
+    predictions_df['sum'] = predictions_df[chemical_cols].sum(axis=1)
+
+    print("\n--- 预测完成 ---\n")
+    return predictions_df
+
+def predict_pre_weathering_composition_knn(df_to_predict, deltas, k=K_NEIGHBORS):
+    """
+    (新方法) 使用基于K最近邻(KNN)的虚拟配对法，预测风化前的成分含量。
+    该方法通过在稳定成分空间中寻找最近的未风化样本来进行预测。
+    """
+    print(f"--- 步骤 2: 对风化样本进行风化前成分预测 (KNN虚拟配对法, K={k}) ---")
+    
+    # 自动识别化学成分列
+    excluded_cols = ['文物采样点', '类型', '表面风化', 'sum']
+    chemical_cols = [col for col in df_to_predict.columns if col not in excluded_cols and df_to_predict[col].dtype in ['float64', 'int64']]
+    
+    # 1. 对所有样本应用CLR变换
+    df_clr = apply_clr_transformation(df_to_predict, chemical_cols)
+    print("  - 已对所有样本应用CLR变换。")
+
+    # 2. 准备数据：分离风化和未风化样本
+    weathered_clr = df_clr[df_clr['表面风化'] == '风化'].copy()
+    unweathered_clr = df_clr[df_clr['表面风化'] == '无风化'].copy()
+
+    if weathered_clr.empty:
+        print("数据中没有需要预测的风化样本。")
+        return None
+    if unweathered_clr.empty:
+        print("数据中没有可供参考的未风化样本，无法进行KNN预测。")
+        return None
+
+    print(f"找到 {len(weathered_clr)} 个风化采样点需要进行预测。")
+    print(f"将使用 {len(unweathered_clr)} 个未风化采样点作为参考库。")
+
+    # 3. 在CLR空间中分类型进行KNN预测
+    all_predictions_list = []
+    
+    for glass_type in weathered_clr['类型'].unique():
+        print(f"\n  - 开始处理类型: '{glass_type}'")
+        
+        # 筛选出当前类型的风化和未风化样本
+        weathered_type = weathered_clr[weathered_clr['类型'] == glass_type]
+        unweathered_type = unweathered_clr[unweathered_clr['类型'] == glass_type]
+        
+        if unweathered_type.empty:
+            print(f"    - 警告: 类型 '{glass_type}' 没有未风化样本作为参考，跳过预测。")
+            continue
+        
+        # 识别稳定成分（即未显著变化的成分）
+        significant_cols = list(deltas.get(glass_type, {}).keys())
+        stable_cols = [col for col in chemical_cols if col not in significant_cols]
+        
+        if not stable_cols:
+            print(f"    - 警告: 类型 '{glass_type}' 未找到稳定成分，无法进行KNN预测，跳过。")
+            continue
+        
+        print(f"    - 使用 {len(stable_cols)} 个稳定成分进行相似度匹配: {stable_cols}")
+
+        # 配置并训练KNN模型，用于寻找最近邻
+        # 我们在未风化样本的稳定成分空间中寻找邻居
+        nn_model = NearestNeighbors(n_neighbors=k, algorithm='auto')
+        nn_model.fit(unweathered_type[stable_cols])
+        
+        # 为当前类型的风化样本寻找K个最近的未风化邻居
+        distances, indices = nn_model.kneighbors(weathered_type[stable_cols])
+        
+        # 基于找到的邻居进行预测
+        predicted_rows = []
+        for i, original_index in enumerate(weathered_type.index):
+            neighbor_indices = unweathered_type.iloc[indices[i]].index
+            
+            # 计算K个邻居的CLR成分均值
+            predicted_clr_values = unweathered_type.loc[neighbor_indices, chemical_cols].mean()
+            
+            # 创建新的预测行，保留原始信息
+            new_row = weathered_type.loc[original_index].copy()
+            new_row[chemical_cols] = predicted_clr_values
+            predicted_rows.append(new_row)
+        
+        if predicted_rows:
+            all_predictions_list.extend(predicted_rows)
+
+    if not all_predictions_list:
+        print("没有生成任何预测结果。")
+        return None
+
+    predicted_clr = pd.DataFrame(all_predictions_list)
+    print("\n  - 已在CLR空间中完成所有类型的预测。")
+
+    # 4. 对预测结果应用逆CLR变换，还原为百分比
     predictions_df = inverse_clr_transformation(predicted_clr, chemical_cols)
     print("  - 已对预测结果应用逆CLR变换。")
     
@@ -182,15 +278,16 @@ def generate_prediction_report(predictions_df, csv_filename):
     print("--- 步骤 4: 生成Markdown格式的预测报告 ---")
 
     if predictions_df is None or predictions_df.empty:
-        return "# 风化前成分预测报告\n\n数据集中没有找到需要预测的风化样本。\n"
+        return "# 风化前化学成分预测报告\n\n数据集中没有找到需要预测的风化样本。\n"
 
-    report = "# 风化前化学成分预测报告 (基于CLR变换)\n\n"
-    report += "本报告根据风化样本的实测化学成分含量，并依据 `高钾分析结果.csv` 和 `钡铅分析结果.csv` 文件中基于**CLR变换**的统计规律，对其风化前的成分含量进行预测。\n\n"
+    report = "# 风化前化学成分预测报告 (基于KNN虚拟配对法)\n\n"
+    report += f"本报告根据风化样本的实测化学成分含量，并依据 `高钾分析结果.csv` 和 `钡铅分析结果.csv` 文件中识别出的**稳定化学成分**，对样本风化前的成分含量进行预测。\n\n"
     report += "**预测方法**：\n"
-    report += "1.  对风化样本的化学成分进行中心对数比（CLR）变换。\n"
-    report += "2.  在CLR变换空间中，根据统计规律（风化前后均值之差`Delta`），应用公式 `预测CLR值 = 实测CLR值 - Delta` 进行预测。\n"
-    report += "3.  对无显著变化的成分，其CLR值保持不变。\n"
-    report += "4.  最后，通过逆CLR变换将预测的CLR值还原为常规的百分比含量。\n\n---\n\n"
+    report += "1.  对所有样本的化学成分进行中心对数比（CLR）变换。\n"
+    report += "2.  根据此前的T检验结果，识别出在风化过程中不发生显著变化的“稳定成分”。\n"
+    report += f"3.  对于每一个风化样本，仅使用其**稳定成分**作为“指纹”，在所有未风化样本中寻找与之最相似的 **{K_NEIGHBORS}** 个“虚拟配对”（K-Nearest Neighbors）。\n"
+    report += "4.  将这K个配对上的未风化样本的**完整CLR成分**取平均值，作为对该风化样本风化前成分的预测。\n"
+    report += "5.  最后，通过逆CLR变换将预测的CLR值还原为常规的百分比含量。\n\n---\n\n"
     report += f"**分析概要**：\n\n"
     report += f"本次分析对 **{len(predictions_df)}** 个风化样本进行了风化前成分预测。\n\n"
     report += f"详细的逐项预测数据（包含风化前后对比）已导出至CSV文件： **`{os.path.basename(csv_filename)}`**。\n\n"
@@ -205,16 +302,18 @@ def main():
     """
     主函数，执行整个预测流程。
     """
-    # 0. 定义输入和输出目录
-    output_dir = '/Users/Mac/Downloads/22C/1/1_3'
-    input_analysis_dir = '/Users/Mac/Downloads/22C/1/1_2'
-    input_data_dir = '/Users/Mac/Downloads/22C/1/1_2'
+    # 0. 定义输入和输出目录（使用相对路径）
+    # 假设此脚本位于 '1_3' 文件夹内
+    script_dir = os.path.dirname(__file__)
+    output_dir = script_dir
+    input_analysis_dir = os.path.join(script_dir, '..', '1_2')
+    input_data_dir = os.path.join(script_dir, '..', '1_2')
     os.makedirs(output_dir, exist_ok=True)
     
     # 1. 定义规律文件和主数据文件
     analysis_files = {
         '高钾': os.path.join(input_analysis_dir, '高钾分析结果.csv'),
-        '铅钡': os.path.join(input_analysis_dir, '钡铅分析结果.csv')
+        '铅钡': os.path.join(input_analysis_dir, '铅钡分析结果.csv')
     }
     main_data_file = os.path.join(input_data_dir, '附件2_处理后.csv')
 
@@ -233,11 +332,11 @@ def main():
     df_filtered = df_main[(df_main['sum'] >= 85) & (df_main['sum'] <= 105)].copy()
 
     # --- Execute Analysis and Prediction ---
-    # 步骤1: 从CSV加载规律并计算Delta值
+    # 步骤1: 从CSV加载规律（用于识别稳定成分）
     change_deltas = load_deltas_from_csv(analysis_files)
     
-    # 步骤2: 进行预测
-    predictions = predict_pre_weathering_composition(df_filtered, change_deltas)
+    # 步骤2: 进行预测 (使用新的KNN方法)
+    predictions = predict_pre_weathering_composition_knn(df_filtered, change_deltas)
     
     # 步骤3: 保存预测结果到CSV
     original_weathered_samples = df_filtered[df_filtered['表面风化'] == '风化'].copy()
