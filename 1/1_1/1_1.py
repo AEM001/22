@@ -4,6 +4,7 @@ import seaborn as sns
 from scipy.stats import chi2_contingency, fisher_exact
 import warnings
 import numpy as np
+from typing import Optional, Tuple
 
 
 # --- 全局设置 ---
@@ -84,30 +85,22 @@ def check_chi2_assumptions(contingency_table):
     
     return method, expected_df, assumptions_text
 
-def perform_statistical_test(contingency_table, method):
+def perform_statistical_test(contingency_table, method) -> Tuple[Optional[float], float, Optional[int], str]:
     """根据方法执行相应的统计检验"""
     
     if method == "Fisher精确检验":
         if contingency_table.shape == (2, 2):
             # 2x2表格用Fisher精确检验
-            result = fisher_exact(contingency_table)
-            oddsratio = float(result[0])
-            p_value = float(result[1])
-            return None, p_value, None, f"比值比 (OR) = {oddsratio:.4f}"
+            oddsratio, p_value = fisher_exact(contingency_table)
+            return None, float(p_value), None, f"比值比 (OR) = {float(oddsratio):.4f}"
         else:
             # 多维表格用卡方检验但标注警告
-            result = chi2_contingency(contingency_table)
-            chi2_stat = float(result[0])
-            p_value = float(result[1])
-            dof = int(result[2])
-            return chi2_stat, p_value, dof, "注：多维表格Fisher检验，此处显示卡方近似值"
+            chi2_stat, p_value, dof, _ = chi2_contingency(contingency_table)
+            return float(chi2_stat), float(p_value), int(dof), "注：多维表格Fisher检验，此处显示卡方近似值"
     else:
         # 标准卡方检验
-        result = chi2_contingency(contingency_table)
-        chi2_stat = float(result[0])
-        p_value = float(result[1])
-        dof = int(result[2])
-        return chi2_stat, p_value, dof, ""
+        chi2_stat, p_value, dof, _ = chi2_contingency(contingency_table)
+        return float(chi2_stat), float(p_value), int(dof), ""
 
 def analyze_and_visualize(df, independent_var, dependent_var='表面风化', report_file=None):
     """分析变量关系并生成markdown报告"""
@@ -122,6 +115,9 @@ def analyze_and_visualize(df, independent_var, dependent_var='表面风化', rep
     # 执行相应的统计检验
     chi2_stat, p_value, dof, additional_info = perform_statistical_test(test_data, method)
     
+    # 初始化Cramer's V
+    cramers_v = None
+
     # 生成markdown报告
     markdown_content = f"""
 ## {independent_var}与{dependent_var}的关系分析
@@ -140,6 +136,18 @@ def analyze_and_visualize(df, independent_var, dependent_var='表面风化', rep
 | 卡方统计量 | {chi2_stat:.4f} |
 | P值 | {p_value:.4f} |
 | 自由度 | {dof} |"""
+        # 计算 Cramer's V
+        n = test_data.to_numpy().sum()
+        if n > 0:
+            try:
+                r, c = test_data.shape
+                min_dim = min(r - 1, c - 1)
+                if min_dim > 0:
+                    cramers_v = np.sqrt(chi2_stat / (n * min_dim))
+                    markdown_content += f"""
+| Cramer's V | {cramers_v:.4f} |"""
+            except (ValueError, ZeroDivisionError):
+                cramers_v = None # 计算错误时保持None
     else:
         markdown_content += f"""
 | P值 | {p_value:.4f} |"""
@@ -151,9 +159,19 @@ def analyze_and_visualize(df, independent_var, dependent_var='表面风化', rep
     markdown_content += "\n\n### 结论\n\n"
     
     alpha = 0.05
-    p_val = float(p_value) if p_value is not None else 1.0
+    p_val = p_value if p_value is not None else 1.0
     if p_val < alpha:
         conclusion = f"P值 ({p_val:.4f}) < {alpha}，拒绝原假设。**{dependent_var}与{independent_var}存在显著关联**。"
+        if cramers_v is not None:
+            if cramers_v >= 0.5:
+                strength = "强关联"
+            elif cramers_v >= 0.3:
+                strength = "中等强度关联"
+            elif cramers_v >= 0.1:
+                strength = "弱关联"
+            else:
+                strength = "可忽略的关联"
+            conclusion += f" Cramer's V 值为 {cramers_v:.4f}，表明这是一个**{strength}**。"
     else:
         conclusion = f"P值 ({p_val:.4f}) ≥ {alpha}，不能拒绝原假设。{dependent_var}与{independent_var}无显著关联。"
     
@@ -196,7 +214,7 @@ def analyze_and_visualize(df, independent_var, dependent_var='表面风化', rep
 
 def main():
     """主函数"""
-    file_path = '附件.csv'
+    file_path = '/Users/Mac/Downloads/22C/22/1/1_1/附件.csv'
     
     try:
         df = pd.read_csv(file_path, encoding='utf-8')
