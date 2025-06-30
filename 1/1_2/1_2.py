@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 # 设置图表样式和调色板
 sns.set_theme(style="whitegrid", palette="muted")
 
-# 'PingFang SC' (平方-简) 是一个不错的选择, 'Heiti TC' (黑体-繁) 是另一个选项。
+
 # 更健壮的字体配置：直接设置字体列表，让Matplotlib自动查找。
 plt.rcParams['font.sans-serif'] = ['PingFang SC', 'Heiti TC', 'Arial Unicode MS', 'SimHei', 'Microsoft YaHei', 'sans-serif']
 # print("字体尝试设置为: PingFang SC, Heiti TC, Arial Unicode MS, SimHei, Microsoft YaHei (及备用字体)") # 已禁止输出
