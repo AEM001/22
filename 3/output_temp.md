@@ -1,5 +1,5 @@
 # 问题三 分类结果
-我创建并运行了一个Python脚本 `3/problem3_classification.py`，该脚本完成了以下任务：
+创建并运行了一个Python脚本 `3/problem3_classification.py`，该脚本完成了以下任务：
 
 1.  **加载数据**：读取了 `3/附件3_处理后_ALR.csv` 文件。
 2.  **特征工程**：精确复制了问题二中模型的训练过程，包括：

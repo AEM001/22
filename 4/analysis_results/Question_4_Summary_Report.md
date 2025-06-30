@@ -37,7 +37,7 @@
 
 ### 3.1. 高钾玻璃的化学成分关联
 
-![高钾玻璃化学成分Spearman相关性热力图](analysis_results/heatmap_高钾_spearman.png)
+![高钾玻璃化学成分Spearman相关性热力图](heatmap_高钾.png)
 
 *图1：高钾玻璃化学成分Spearman相关性热力图。红色表示正相关，蓝色表示负相关，颜色越深相关性越强。星号(*)表示在α=0.05水平下显著相关。*
 
@@ -48,7 +48,7 @@
 
 ### 3.2. 铅钡玻璃的化学成分关联
 
-![铅钡玻璃化学成分Spearman相关性热力图](analysis_results/heatmap_铅钡_spearman.png)
+![铅钡玻璃化学成分Spearman相关性热力图](heatmap_铅钡.png)
 
 *图2：铅钡玻璃化学成分Spearman相关性热力图。解读方式同图1。*
 
