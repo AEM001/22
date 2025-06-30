@@ -9,53 +9,41 @@ import warnings
 import sys
 import os
 
-# 将脚本所在目录添加到系统路径，以便导入同级目录下的模块
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-try:
-    from ilr_transformation import ilr_transform
-except ImportError:
-    print("错误：无法导入 'ilr_transformation.py'。请确保该文件与本脚本在同一目录下。")
-    sys.exit(1)
-
-
 # 抑制未来版本警告，保持输出整洁
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 # --- 全局配置 ---
 # 假定脚本从项目根目录执行
-DATA_FILE = '2/2.1/附件2_亚类划分后.csv'
-REPORT_FILE = '2/2.1/subclass_analysis_report.md'
+DATA_FILE = '/Users/Mac/Downloads/22C/22/2/2.1/附件2_亚类划分后.csv'
+REPORT_FILE = '/Users/Mac/Downloads/22C/22/2/2.1/subclass_analysis_report.md'
 
 
 def run_anova_for_glass_type(df, glass_type, features):
     """
     为指定的玻璃类型及其特征运行ANOVA和Tukey's HSD事后检验。
+    在分析前会排除标签为"离群点"的样本。
     """
     report_content = f"\n\n## {glass_type}玻璃亚类划分合理性评估 (ANOVA)\n\n"
     report_content += "我们采用单因素方差分析(ANOVA)来检验不同亚类之间，其核心化学成分的均值是否存在统计显著性差异。p值小于0.05通常被认为差异是显著的。\n"
-
-    if glass_type == '高钾':
-        report_content += "> **特别说明**: 高钾玻璃的一个亚类仅包含单个样本，这会极大影响方差分析的统计功效，因此其结果仅供参考。\n\n"
+    report_content += "> **说明**: 此项分析已自动排除了在聚类步骤中被识别为“离群点”的样本，以确保评估的准确性。\n\n"
 
     data = df[df['类型'] == glass_type]
+    # 排除离群点
+    data = data[~data['亚类'].str.contains('离群点', na=False)].copy()
+
     if data['亚类'].nunique() < 2:
-        report_content += "只有一个亚类，无法进行ANOVA比较。\n"
+        report_content += "在排除离群点后，只有一个亚类，无法进行ANOVA比较。\n"
         return report_content
 
     for feature in features:
-        groups = [group[feature].dropna() for _, group in data.groupby('亚类')]
+        # 使用dropna()确保即使某些亚类有缺失值，分组也能正常进行
+        groups = [group[feature].dropna() for name, group in data.groupby('亚类')]
         
-        # 至少需要两组数据才能进行方差分析
+        # 至少需要两组，每组至少一个样本才能进行方差分析
         if len(groups) < 2 or any(len(g) < 1 for g in groups):
             continue
         
-        # 过滤掉无法计算方差的组 (例如，仅包含一个样本的组)
-        valid_groups = [g for g in groups if len(g) > 1]
-        if len(valid_groups) < 2 and len(groups) >=2:
-            report_content += f"\n### 对 `{feature}` 的分析\n"
-            report_content += "- **ANOVA结果**: 由于存在单一样本的亚类，无法进行有效的方差分析。\n"
-            continue
-
+        # f_oneway要求每组至少一个样本
         f_val, p_val = f_oneway(*groups)
         
         report_content += f"\n### 对 `{feature}` 的分析\n"
@@ -63,7 +51,12 @@ def run_anova_for_glass_type(df, glass_type, features):
         report_content += f"- **ANOVA结果**: F统计量 = {f_val:.4f}，{conclusion}\n"
 
         if p_val < 0.05:
-            tukey = pairwise_tukeyhsd(endog=data[feature], groups=data['亚类'], alpha=0.05)
+            # Tukey HSD要求每组样本数大于1，否则会报错
+            if any(len(g) <= 1 for g in groups):
+                report_content += "- **事后检验 (Tukey's HSD)**: 因存在单一样本的亚类，无法进行事后检验。\n"
+                continue
+
+            tukey = pairwise_tukeyhsd(endog=data[feature].dropna(), groups=data['亚类'], alpha=0.05)
             tukey_df = pd.DataFrame(data=tukey._results_table.data[1:], columns=tukey._results_table.data[0])
             significant_pairs = tukey_df[tukey_df['p-adj'] < 0.05]
             
@@ -77,18 +70,23 @@ def run_anova_for_glass_type(df, glass_type, features):
 def run_sensitivity_analysis(df, glass_type, features, k, max_noise_level=0.1, step=0.005):
     """
     通过注入高斯噪声来执行敏感性分析。
+    在分析前会排除标签为"离群点"的样本。
     """
     report_content = f"\n\n## {glass_type}玻璃亚类划分敏感性评估\n\n"
     report_content += "敏感性评估旨在测试亚类划分结果对数据微小扰动的稳健性。我们通过向原始数据（ILR变换后）注入逐步增加的乘性高斯噪声 `(X_noisy = X_scaled * (1 + ε * N(0,1)))`，然后重新进行K-Means聚类，并使用调整兰德指数（Adjusted Rand Index, ARI）来比较新旧聚类结果的一致性。ARI为1表示两次聚类结果完全相同，接近0则表示结果不相关。\n"
+    report_content += "> **说明**: 此项分析同样在排除了“离群点”样本的数据上进行。\n"
     
-    if glass_type == '高钾':
-        report_content += "> **特别说明**: 高钾玻璃存在单样本离群点，其聚类结果本身对扰动极其敏感，因此不适用此项分析。\n"
+    data = df[df['类型'] == glass_type].copy()
+    # 排除离群点
+    data = data[~data['亚类'].str.contains('离群点', na=False)].copy()
+    
+    if data.empty or data['亚类'].nunique() < 2:
+        report_content += f"\n**评估结果**:\n- 在排除离群点后，没有足够的数据或亚类来进行{glass_type}玻璃的敏感性分析。\n"
         return report_content
 
-    data = df[df['类型'] == glass_type].copy()
     original_labels = data['亚类']
     
-    # 根据错误分析，输入文件中的特征列已经是ILR变换后的坐标，而不是原始成分。
+    # 输入文件中的特征列已经是ILR变换后的坐标，而不是原始成分。
     # 因此，我们直接使用这些数据，不再重新进行ILR变换，仅进行标准化。
     X_ilr = data[features].fillna(0).values
     
@@ -136,9 +134,11 @@ def main():
     features_pb = ['二氧化硅(SiO2)', '氧化铅(PbO)', '氧化钡(BaO)', '五氧化二磷(P2O5)']
     
     # --- 执行分析 ---
+    # 高钾玻璃 (k=2, 离群点被自动排除)
     anova_k_report = run_anova_for_glass_type(df, '高钾', features_k)
     sensitivity_k_report = run_sensitivity_analysis(df, '高钾', features_k, k=2)
     
+    # 铅钡玻璃 (k=3)
     anova_pb_report = run_anova_for_glass_type(df, '铅钡', features_pb)
     sensitivity_pb_report = run_sensitivity_analysis(df, '铅钡', features_pb, k=3)
     

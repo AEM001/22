@@ -101,7 +101,7 @@ def run_clustering_analysis(df_transformed, df_original, glass_type, features, m
     centers_original = df_type_original.groupby('亚类')[features].mean()
     log_to_report(centers_original.to_markdown(), is_code_block=True)
     log_to_report(
-        "> **说明**: 上表是每个亚类化学成分的**平均值**，它代表了该亚类的"典型"化学构成，是后续对亚类进行命名的核心依据。\n"
+        "> **说明**: 上表是每个亚类化学成分的**平均值**，它代表了该亚类的“典型”化学构成，是后续对亚类进行命名的核心依据。\n"
     )
     
     log_to_report("\n**各亚类化学成分标准差:**")
@@ -127,11 +127,8 @@ log_to_console("="*20 + " 1. 数据加载 " + "="*20)
 try:
     df_transformed = pd.read_csv('2/2.1/附件2_处理后_ILR_常数替换.csv')
     log_to_console("数据 '2.1/附件2_处理后_ILR_常数替换.csv' 加载完成。")
-    df_original = pd.read_csv('2/2.1/附件2_处理前.csv')
-    log_to_console("数据 '2.1/附件2_处理前.csv' 加载完成。")
-    df_original = df_original.set_index(df_transformed.index)
 except FileNotFoundError as e:
-    log_to_console(f"错误：数据文件未找到，请检查路径。 {e}")
+    log_to_console(f"错误：数据文件 '2/2.1/附件2_处理后_ILR_常数替换.csv' 未找到，请检查路径。 {e}")
     exit()
 
 log_to_report("# 文物玻璃亚类划分聚类分析报告 (修正版)", is_heading=True)
@@ -166,23 +163,21 @@ outlier_indices = df_gaojia_transformed_orig[df_gaojia_transformed_orig['离群�
 log_to_report("使用`孤立森林`算法在ILR变换后的高维特征空间中进行离群点检测。")
 
 if not outlier_indices.empty:
-    outlier_文物编号 = df_original.loc[outlier_indices, '文物编号'].to_list()
+    outlier_文物编号 = df_transformed.loc[outlier_indices, '文物编号'].to_list()
     log_to_report(f"**检测结果**: 发现 **{len(outlier_indices)}** 个潜在离群点 (文物编号: `{'`, `'.join(map(str, outlier_文物编号))}`)。")
     log_to_report("> **分析**: 该样本在高维空间中与其他高钾玻璃样本疏离，与原始聚类分析中单样本成一类的情况吻合。为提高聚类结果的可靠性，我们将其移除后重新进行聚类分析。")
     
     # 移除离群点
     df_transformed_cleaned = df_transformed.drop(index=outlier_indices)
-    df_original_cleaned = df_original.drop(index=outlier_indices)
     log_to_report(f"亚类分析将在剩余的 **{len(df_transformed_cleaned[df_transformed_cleaned['类型'] == '高钾'])}** 个高钾样本上进行。\n")
 else:
     log_to_report("**检测结果**: 未发现显著离群点，将对所有高钾样本进行聚类。\n")
     outlier_文物编号 = []
     df_transformed_cleaned = df_transformed
-    df_original_cleaned = df_original
 
 # 在清洗后的数据上重新进行聚类分析
 df_gaojia_clustered, centers_gaojia = run_clustering_analysis(
-    df_transformed_cleaned, df_original_cleaned, '高钾', features_gaojia, max_k=6, chosen_k=2
+    df_transformed_cleaned, df_transformed_cleaned, '高钾', features_gaojia, max_k=6, chosen_k=2
 )
 
 # --- 铅钡玻璃分析 ---
@@ -190,7 +185,7 @@ log_to_console("\n" + "="*20 + " 3. 处理铅钡玻璃 " + "="*20)
 features_qianbei = ['二氧化硅(SiO2)', '氧化铅(PbO)', '氧化钡(BaO)', '五氧化二磷(P2O5)']
 # 使用移除了高钾离群点的数据集进行分析
 df_qianbei_clustered, centers_qianbei = run_clustering_analysis(
-    df_transformed_cleaned, df_original_cleaned, '铅钡', features_qianbei, max_k=6, chosen_k=3
+    df_transformed_cleaned, df_transformed_cleaned, '铅钡', features_qianbei, max_k=6, chosen_k=3
 )
 
 # 对铅钡玻璃的氧化铅(PbO)进行补充分析
@@ -199,7 +194,7 @@ if df_qianbei_clustered is not None:
     log_to_report(wrap_text("> **背景**: 初始ANOVA检验显示，各亚类间的`氧化铅(PbO)`均值无统计显著性差异（p>0.05），但这与观察到的均值差异（如亚类均值40.3% vs 26.0%）似乎矛盾。这通常由组内方差过大导致。为进一步探究，我们进行非参数检验和可视化分析。"))
 
     # 获取带有亚类标签的原始数据
-    df_qianbei_original_clustered = df_original_cleaned.loc[df_qianbei_clustered.index].copy()
+    df_qianbei_original_clustered = df_transformed_cleaned.loc[df_qianbei_clustered.index].copy()
     df_qianbei_original_clustered['亚类'] = df_qianbei_clustered['亚类']
     
     # 1. 可视化分析：箱线图
